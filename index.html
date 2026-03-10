@@ -14,6 +14,8 @@
             padding: 20px;
         }
         h1, h2 { color: #fff; border-bottom: 1px solid #333; padding-bottom: 10px; }
+        
+        /* Kísérleti kártyák stílusa */
         .card { 
             border: 2px solid #0f0; 
             border-radius: 8px;
@@ -32,6 +34,23 @@
         .zöld { color: #00ff00; border-color: #00ff00; }
         .lila { color: #cc44ff; border-color: #cc44ff; }
         
+        /* Tervrajz kártyák stílusa */
+        .blueprint-card {
+            border: 2px solid #44aaff;
+            background: #002244;
+            color: #add8e6;
+            border-radius: 8px;
+            padding: 10px;
+            margin: 5px;
+            display: inline-block;
+            cursor: pointer;
+            font-size: 14px;
+            max-width: 150px;
+            vertical-align: top;
+            transition: transform 0.2s;
+        }
+        .blueprint-card:hover { transform: scale(1.05); background: #003366; }
+
         #gameArea { display: none; margin-top: 20px;}
         input, button { 
             padding: 10px; 
@@ -62,6 +81,9 @@
         <h2>Kísérleti Asztal</h2>
         <div id="table" class="table-area"></div>
         
+        <h2>Tervrajzaid (A mesterterv)</h2>
+        <div id="blueprints" class="table-area" style="border-color: #44aaff;"></div>
+
         <h2>A Te Kártyáid</h2>
         <div id="hand" class="table-area"></div>
 
@@ -72,7 +94,7 @@
         import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
         import { getDatabase, ref, set, onValue, update, get } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-database.js";
 
-        // A te Firebase konfigurációd (kiegészítve a feltételezett databaseURL-lel)
+        // A te Firebase konfigurációd
         const firebaseConfig = {
             apiKey: "AIzaSyAe1lhuPmucY41GlZFfvHJ9vzCtMQlkrus",
             authDomain: "monolog-b6379.firebaseapp.com",
@@ -85,6 +107,17 @@
 
         const app = initializeApp(firebaseConfig);
         const db = getDatabase(app);
+
+        // 1. CSOMAG: „Az első kísérlet" (Kezdő)
+        const BLUEPRINTS = {
+            1: "Az ikrek paradoxona (Pontosan 2 ütés)",
+            2: "A láthatatlan ember (Pontosan 0 ütés)",
+            4: "A kedvenc tanítvány (Nyerj ütést a hűséges követővel/K)",
+            6: "Automata védelem (Ne legyen Bérenc/Piros a zsákmányban)",
+            8: "Robothadsereg (Legalább 2 ütés Robot/Zöld vivővel)",
+            10: "A nagy finálé (Nyerd meg az utolsó 2 ütést)",
+            16: "A világuralom (Nyerj 5 vagy több ütést)"
+        };
 
         // Kliens oldali változók
         let myId = "tudos_" + Math.floor(Math.random() * 10000);
@@ -129,6 +162,11 @@
             onValue(ref(db, `games/${currentGameId}/secret_hands/${myId}`), (snapshot) => {
                 renderHand(snapshot.val());
             });
+
+            // Saját tervrajzok figyelése
+            onValue(ref(db, `games/${currentGameId}/players/${myId}/blueprints`), (snapshot) => {
+                renderBlueprints(snapshot.val());
+            });
         }
 
         // 3. JÁTÉK INDÍTÁSA ÉS OSZTÁS (Game Master logika)
@@ -147,11 +185,11 @@
                 return;
             }
 
-            // Pakli felépítése [cite: 31]
+            // Pakli felépítése
             let validValues = [];
-            if (numPlayers === 3) validValues = [5, 6, 7, 8, 9, 10]; // 24 lap [cite: 31]
-            else if (numPlayers === 4) validValues = [3, 4, 5, 6, 7, 8, 9, 10]; // 32 lap [cite: 31]
-            else if (numPlayers === 5) validValues = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]; // 40 lap [cite: 31]
+            if (numPlayers === 3) validValues = [5, 6, 7, 8, 9, 10]; // 24 lap
+            else if (numPlayers === 4) validValues = [3, 4, 5, 6, 7, 8, 9, 10]; // 32 lap
+            else if (numPlayers === 5) validValues = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]; // 40 lap
 
             const suits = ['Piros', 'Narancs', 'Zöld', 'Lila'];
             let deck = [];
@@ -168,14 +206,17 @@
                 [deck[i], deck[j]] = [deck[j], deck[i]];
             }
 
-            // Osztás: Mindenkinek 8 lap
             const updates = {};
+            const starterPack = [1, 2, 4, 6, 8, 10, 16]; // "Az első kísérlet" tervrajz ID-k
+
+            // Osztás: Mindenkinek 8 lap és a 7 tervrajz
             playerIds.forEach(pId => {
                 const hand = [];
                 for (let i = 0; i < 8; i++) {
                     hand.push(deck.pop());
                 }
                 updates[`games/${currentGameId}/secret_hands/${pId}`] = hand;
+                updates[`games/${currentGameId}/players/${pId}/blueprints`] = starterPack;
             });
 
             // Asztal ürítése és státusz váltás
@@ -183,7 +224,7 @@
             updates[`games/${currentGameId}/status`] = "drafting";
 
             update(ref(db), updates)
-                .then(() => alert("Kísérlet elindítva! A lapokat kiosztottuk."))
+                .then(() => alert("Kísérlet elindítva! A lapokat és tervrajzokat kiosztottuk."))
                 .catch(err => console.error(err));
         });
 
@@ -196,20 +237,20 @@
             return "";
         }
 
-        // Fontos: globálissá tesszük a függvényt, hogy az onclick HTML attribútum megtalálja
         window.playCard = function(index, cardSuit, cardValue) {
             const updates = {};
-            // Kártya asztalra helyezése a nevem alatt
             updates[`games/${currentGameId}/table/${myId}`] = { 
                 suit: cardSuit, 
                 value: cardValue,
                 playerName: myName 
             };
-            
-            // Kártya törlése a kezemből (null értékkel töröl a Firebase)
             updates[`games/${currentGameId}/secret_hands/${myId}/${index}`] = null;
-
             update(ref(db), updates);
+        };
+
+        window.selectBlueprint = function(index, id) {
+            console.log("Kiválasztott tervrajz ID:", id);
+            alert(`A kiválasztott terved: ${BLUEPRINTS[id]}. Később itt fogod eldönteni, hogy Nyíltan (Monológ) vagy Rejtve (Szervezkedés) játszod meg!`);
         };
 
         function renderTable(tableData) {
@@ -230,6 +271,24 @@
             }
         }
 
+        function renderBlueprints(blueprintIds) {
+            const bpDiv = document.getElementById('blueprints');
+            bpDiv.innerHTML = "";
+            if (!blueprintIds) {
+                bpDiv.innerHTML = "<p style='color: #666;'>Még nincsenek tervrajzaid.</p>";
+                return;
+            }
+
+            blueprintIds.forEach((id, index) => {
+                const text = BLUEPRINTS[id];
+                bpDiv.innerHTML += `
+                    <div class="blueprint-card" onclick="selectBlueprint(${index}, ${id})">
+                        <strong>#${id}</strong><br>
+                        ${text}
+                    </div>`;
+            });
+        }
+
         function renderHand(handData) {
             const handDiv = document.getElementById('hand');
             handDiv.innerHTML = "";
@@ -238,7 +297,6 @@
                 return;
             }
 
-            // Firebase tömbként (vagy objektumként) adja vissza, végigmegyünk a kulcsokon
             Object.keys(handData).forEach(key => {
                 const card = handData[key];
                 if(card) {
