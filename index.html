@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="hu">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MONOLÓG - Online Laboratórium</title>
+    <style>
+        body { 
+            font-family: monospace; 
+            background: #111; 
+            color: #0f0; 
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        h1, h2 { color: #fff; border-bottom: 1px solid #333; padding-bottom: 10px; }
+        .card { 
+            border: 2px solid #0f0; 
+            border-radius: 8px;
+            padding: 15px; 
+            margin: 5px; 
+            display: inline-block; 
+            cursor: pointer; 
+            background: #222;
+            font-size: 16px;
+            font-weight: bold;
+            transition: transform 0.2s;
+        }
+        .card:hover { transform: scale(1.05); background: #333; }
+        .piros { color: #ff4444; border-color: #ff4444; }
+        .narancs { color: #ffaa00; border-color: #ffaa00; }
+        .zöld { color: #00ff00; border-color: #00ff00; }
+        .lila { color: #cc44ff; border-color: #cc44ff; }
+        
+        #gameArea { display: none; margin-top: 20px;}
+        input, button { 
+            padding: 10px; 
+            font-size: 16px; 
+            margin: 5px 0; 
+            font-family: monospace;
+        }
+        button { background: #0f0; color: #111; border: none; font-weight: bold; cursor: pointer; }
+        button:hover { background: #fff; }
+        #startGameBtn { background: #ff4444; color: white; margin-top: 20px; width: 100%; }
+        
+        .table-area { min-height: 100px; border: 2px dashed #444; padding: 10px; margin-bottom: 20px;}
+    </style>
+</head>
+<body>
+    <h1>MONOLÓG: Az őrült tudósok harca</h1>
+    
+    <div id="setup">
+        <p>Add meg a neved és a labor azonosítóját a csatlakozáshoz!</p>
+        <input type="text" id="playerName" placeholder="Tudós neve..." autocomplete="off"><br>
+        <input type="text" id="gameId" placeholder="Szoba ID (pl: lab-01)" autocomplete="off"><br>
+        <button id="joinBtn">Belépés a Laborba</button>
+    </div>
+
+    <div id="gameArea">
+        <p>Státusz: <span id="gameStatus" style="color: #ffaa00;">Várakozás a játékosokra...</span></p>
+        
+        <h2>Kísérleti Asztal</h2>
+        <div id="table" class="table-area"></div>
+        
+        <h2>A Te Kártyáid</h2>
+        <div id="hand" class="table-area"></div>
+
+        <button id="startGameBtn">Kísérlet Indítása (Osztás)</button>
+    </div>
+
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js";
+        import { getDatabase, ref, set, onValue, update, get } from "https://www.gstatic.com/firebasejs/10.7.1/firebase-database.js";
+
+        // A te Firebase konfigurációd (kiegészítve a feltételezett databaseURL-lel)
+        const firebaseConfig = {
+            apiKey: "AIzaSyAe1lhuPmucY41GlZFfvHJ9vzCtMQlkrus",
+            authDomain: "monolog-b6379.firebaseapp.com",
+            databaseURL: "https://monolog-b6379-default-rtdb.europe-west1.firebasedatabase.app",
+            projectId: "monolog-b6379",
+            storageBucket: "monolog-b6379.firebasestorage.app",
+            messagingSenderId: "512346889746",
+            appId: "1:512346889746:web:502509654cf7fd2b9742cb"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const db = getDatabase(app);
+
+        // Kliens oldali változók
+        let myId = "tudos_" + Math.floor(Math.random() * 10000);
+        let myName = "";
+        let currentGameId = "";
+
+        // 1. CSATLAKOZÁS A JÁTÉKHOZ
+        document.getElementById('joinBtn').addEventListener('click', () => {
+            myName = document.getElementById('playerName').value.trim();
+            currentGameId = document.getElementById('gameId').value.trim();
+            
+            if(!myName || !currentGameId) return alert("Töltsd ki mindkét mezőt!");
+
+            // Játékos regisztrálása az adatbázisba
+            set(ref(db, `games/${currentGameId}/players/${myId}`), {
+                name: myName,
+                score: 0
+            });
+
+            document.getElementById('setup').style.display = 'none';
+            document.getElementById('gameArea').style.display = 'block';
+
+            listenToGame();
+        });
+
+        // 2. VALÓS IDEJŰ FIGYELŐK BEÁLLÍTÁSA
+        function listenToGame() {
+            // Játék státusz figyelése
+            onValue(ref(db, `games/${currentGameId}/status`), (snapshot) => {
+                const status = snapshot.val();
+                const statusSpan = document.getElementById('gameStatus');
+                if(status === "drafting") statusSpan.innerText = "Draft fázis (Kémkedés)...";
+                else if(status === "playing") statusSpan.innerText = "Ütésváltás!";
+            });
+
+            // Asztal figyelése
+            onValue(ref(db, `games/${currentGameId}/table`), (snapshot) => {
+                renderTable(snapshot.val());
+            });
+
+            // Saját kéz figyelése
+            onValue(ref(db, `games/${currentGameId}/secret_hands/${myId}`), (snapshot) => {
+                renderHand(snapshot.val());
+            });
+        }
+
+        // 3. JÁTÉK INDÍTÁSA ÉS OSZTÁS (Game Master logika)
+        document.getElementById('startGameBtn').addEventListener('click', async () => {
+            const playersRef = ref(db, `games/${currentGameId}/players`);
+            const snapshot = await get(playersRef);
+            
+            if (!snapshot.exists()) return;
+            
+            const players = snapshot.val();
+            const playerIds = Object.keys(players);
+            const numPlayers = playerIds.length;
+            
+            if (numPlayers < 3 || numPlayers > 5) {
+                alert(`A játékhoz 3, 4 vagy 5 őrült tudósra van szükség! Jelenleg ${numPlayers} tudós van a laborban.`);
+                return;
+            }
+
+            // Pakli felépítése [cite: 31]
+            let validValues = [];
+            if (numPlayers === 3) validValues = [5, 6, 7, 8, 9, 10]; // 24 lap [cite: 31]
+            else if (numPlayers === 4) validValues = [3, 4, 5, 6, 7, 8, 9, 10]; // 32 lap [cite: 31]
+            else if (numPlayers === 5) validValues = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]; // 40 lap [cite: 31]
+
+            const suits = ['Piros', 'Narancs', 'Zöld', 'Lila'];
+            let deck = [];
+            
+            for (let suit of suits) {
+                for (let val of validValues) {
+                    deck.push({ suit: suit, value: val });
+                }
+            }
+
+            // Keverés (Fisher-Yates)
+            for (let i = deck.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [deck[i], deck[j]] = [deck[j], deck[i]];
+            }
+
+            // Osztás: Mindenkinek 8 lap
+            const updates = {};
+            playerIds.forEach(pId => {
+                const hand = [];
+                for (let i = 0; i < 8; i++) {
+                    hand.push(deck.pop());
+                }
+                updates[`games/${currentGameId}/secret_hands/${pId}`] = hand;
+            });
+
+            // Asztal ürítése és státusz váltás
+            updates[`games/${currentGameId}/table`] = null;
+            updates[`games/${currentGameId}/status`] = "drafting";
+
+            update(ref(db), updates)
+                .then(() => alert("Kísérlet elindítva! A lapokat kiosztottuk."))
+                .catch(err => console.error(err));
+        });
+
+        // 4. UI FRISSÍTÉSEK ÉS SEGÉDFÜGGVÉNYEK
+        function getSuitClass(suit) {
+            if(suit === "Piros") return "piros";
+            if(suit === "Narancs") return "narancs";
+            if(suit === "Zöld") return "zöld";
+            if(suit === "Lila") return "lila";
+            return "";
+        }
+
+        // Fontos: globálissá tesszük a függvényt, hogy az onclick HTML attribútum megtalálja
+        window.playCard = function(index, cardSuit, cardValue) {
+            const updates = {};
+            // Kártya asztalra helyezése a nevem alatt
+            updates[`games/${currentGameId}/table/${myId}`] = { 
+                suit: cardSuit, 
+                value: cardValue,
+                playerName: myName 
+            };
+            
+            // Kártya törlése a kezemből (null értékkel töröl a Firebase)
+            updates[`games/${currentGameId}/secret_hands/${myId}/${index}`] = null;
+
+            update(ref(db), updates);
+        };
+
+        function renderTable(tableData) {
+            const tableDiv = document.getElementById('table');
+            tableDiv.innerHTML = "";
+            if (!tableData) {
+                tableDiv.innerHTML = "<p style='color: #666;'>Az asztal üres.</p>";
+                return;
+            }
+
+            for (const [pId, card] of Object.entries(tableData)) {
+                const cClass = getSuitClass(card.suit);
+                tableDiv.innerHTML += `
+                    <div class="card ${cClass}">
+                        <small>${card.playerName}</small><br>
+                        ${card.suit} ${card.value}
+                    </div>`;
+            }
+        }
+
+        function renderHand(handData) {
+            const handDiv = document.getElementById('hand');
+            handDiv.innerHTML = "";
+            if (!handData) {
+                handDiv.innerHTML = "<p style='color: #666;'>Nincsenek lapjaid.</p>";
+                return;
+            }
+
+            // Firebase tömbként (vagy objektumként) adja vissza, végigmegyünk a kulcsokon
+            Object.keys(handData).forEach(key => {
+                const card = handData[key];
+                if(card) {
+                    const cClass = getSuitClass(card.suit);
+                    handDiv.innerHTML += `
+                        <div class="card ${cClass}" onclick="playCard('${key}', '${card.suit}', ${card.value})">
+                            ${card.suit} ${card.value}
+                        </div>`;
+                }
+            });
+        }
+    </script>
+</body>
+</html>
